@@ -1,246 +1,616 @@
-# Explicacion De Funcionalidades Principales
+# Explicacion Tecnica De Funcionalidades
 
-Este documento describe como se implementaron las funcionalidades principales del proyecto de projection mapping con OpenGL.
+Este documento explica las funcionalidades principales del proyecto y muestra los fragmentos de codigo esenciales para entender como se implementaron con Pygame, OpenGL y Pillow.
 
-## Estructura General
+La explicacion esta pensada para alguien que conoce OpenGL y quiere entender la arquitectura y las decisiones tecnicas del proyecto.
 
-El proyecto esta separado en varios archivos para mantener responsabilidades claras:
+## 1. Estructura General
 
-- `main.py`: inicializa Pygame/OpenGL, crea las caras, maneja el loop principal y los estados globales.
-- `faces.py`: define la clase `Face`, que representa una cara proyectable.
+El proyecto esta dividido por responsabilidades:
+
+- `main.py`: crea la ventana, inicializa OpenGL, mantiene el loop principal y los estados globales.
+- `faces.py`: define la estructura de una cara editable.
 - `input_handler.py`: maneja teclado, mouse, colores y seleccion de texturas.
-- `renderer.py`: contiene las funciones de dibujo OpenGL.
-- `texture_loader.py`: carga imagenes, texturas y GIFs animados.
+- `renderer.py`: contiene todo el dibujo OpenGL.
+- `texture_loader.py`: carga imagenes estaticas y GIFs animados como texturas OpenGL.
 
-## Representacion De Las Caras
+El loop principal vive en `main.py` y en cada frame realiza:
 
-Cada superficie proyectada se representa con la clase `Face`, definida en `faces.py`.
+```python
+for event in pygame.event.get():
+    # procesar teclado/mouse
 
-Una cara contiene:
+glClear(GL_COLOR_BUFFER_BIT)
 
-- `vertices`: lista de 4 puntos `[x, y]` en coordenadas de pantalla.
-- `color`: color RGB con valores entre `0.0` y `1.0`.
-- `texture_id`: textura asociada a la cara, si existe.
-- `selected_vertex`: vertice actualmente seleccionado con el mouse.
+for index, face in enumerate(faces):
+    # dibujar cara normal o efecto infinito
 
-Cada cara se dibuja como un cuadrilatero OpenGL usando `GL_QUADS`. Como los vertices se pueden mover libremente, cada cara puede deformarse para calzar con una superficie real del cubo.
+pygame.display.flip()
+clock.tick(60)
+```
 
-## Sistema De Coordenadas 2D
+La idea base es simple: se dibujan tres cuadrilateros 2D deformables, cada uno representando una cara visible del cubo real.
 
-En `renderer.py`, la funcion `setup_2d(width, height)` configura OpenGL para trabajar en 2D:
+## 2. Ventana OpenGL Con Pygame
+
+La ventana se crea con Pygame usando doble buffer y contexto OpenGL:
+
+```python
+pygame.display.set_mode((width, height), DOUBLEBUF | OPENGL)
+```
+
+Luego se activa blending para poder usar transparencias en overlays, paneles y efectos:
+
+```python
+glEnable(GL_BLEND)
+glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+```
+
+Esto es importante porque el proyecto dibuja:
+
+- caras con color,
+- texturas,
+- vertices de control,
+- lineas del efecto infinito,
+- panel de controles semitransparente.
+
+## 3. Sistema De Coordenadas 2D
+
+Aunque se usa OpenGL, el proyecto trabaja en una proyeccion ortografica 2D. La configuracion esta en `setup_2d(...)`:
+
+```python
+def setup_2d(width, height):
+    glViewport(0, 0, width, height)
+    glMatrixMode(GL_PROJECTION)
+    glLoadIdentity()
+    glOrtho(0, width, height, 0, -1, 1)
+    glMatrixMode(GL_MODELVIEW)
+    glLoadIdentity()
+```
+
+La llamada clave es:
 
 ```python
 glOrtho(0, width, height, 0, -1, 1)
 ```
 
-Esto hace que:
+Con esto:
 
-- `(0, 0)` este arriba a la izquierda.
-- `x` crezca hacia la derecha.
-- `y` crezca hacia abajo.
+- `(0, 0)` queda arriba a la izquierda.
+- `x` crece hacia la derecha.
+- `y` crece hacia abajo.
 
-Esta configuracion facilita usar directamente las posiciones del mouse de Pygame.
+Esto coincide con las coordenadas de mouse de Pygame, por lo que se pueden usar directamente `event.pos` para mover vertices.
 
-## Calibracion De Caras Con Mouse
+## 4. Representacion De Una Cara
 
-La calibracion se maneja en `input_handler.py`.
-
-El usuario puede:
-
-- presionar `TAB` para cambiar la cara activa,
-- hacer click cerca de un vertice,
-- arrastrarlo con el mouse,
-- soltarlo para fijar su nueva posicion.
-
-La deteccion del vertice se realiza con `find_vertex_near(...)` en `faces.py`. Si el mouse esta suficientemente cerca de un vertice, ese vertice queda seleccionado.
-
-Luego, mientras el mouse se mueve, `move_vertex(...)` actualiza la posicion del vertice.
-
-Esto permite ajustar manualmente las caras proyectadas hasta que calcen con las caras reales del cubo.
-
-## Resaltado De La Cara Activa
-
-En `renderer.py`, `draw_face(...)` recibe el parametro `is_active`.
-
-Si la cara esta activa:
-
-- se dibuja con borde amarillo mas grueso,
-- sus vertices aparecen mas grandes,
-- los vertices se ven rojos.
-
-Si no esta activa:
-
-- el borde se ve gris,
-- los vertices se dibujan mas pequenos.
-
-Esto ayuda a saber que cara se esta editando en cada momento.
-
-## Colores
-
-Los colores estan definidos en `COLOR_PALETTE`, dentro de `input_handler.py`.
-
-El usuario puede cambiar el color de la cara activa usando:
-
-- `1-9`
-- `0`
-- `Q W E R Y U I O P`
-
-Cuando se asigna un color, se elimina la textura de esa cara:
+Cada cara se modela con la clase `Face` en `faces.py`:
 
 ```python
-self.faces[self.active_face].texture_id = None
+class Face:
+    def __init__(self, vertices=None, color=(1.0, 1.0, 1.0), texture_id=None):
+        self.vertices = [list(v) for v in vertices]
+        self.color = color
+        self.texture_id = texture_id
+        self.selected_vertex = None
 ```
 
-Asi se evita mezclar color plano y textura al mismo tiempo.
-
-## Texturas E Imagenes
-
-Las texturas se guardan en la carpeta `assets/`.
-
-En `input_handler.py`, el programa busca automaticamente archivos con extensiones:
-
-- `.png`
-- `.jpg`
-- `.jpeg`
-- `.bmp`
-- `.webp`
-- `.gif`
-
-Con `T`, el usuario avanza a la siguiente textura disponible. Con `Shift + T`, vuelve a la anterior.
-
-La carga de imagenes se realiza en `texture_loader.py`, usando Pillow. Cada imagen se convierte a formato `RGBA` y luego se sube a OpenGL con `glTexImage2D`.
-
-## Soporte Para GIFs Animados
-
-Los GIFs se manejan con la clase `AnimatedTexture`, definida en `texture_loader.py`.
-
-Cuando el archivo cargado es un GIF animado:
-
-1. Se recorren todos sus frames con `ImageSequence.Iterator`.
-2. Cada frame se convierte a textura OpenGL.
-3. Se guarda la duracion de cada frame.
-4. Se crea un objeto `AnimatedTexture`.
-
-Durante el render, `renderer.py` revisa si la textura tiene el metodo `get_texture_id(...)`.
-
-Si lo tiene, significa que es animada:
+Lo importante es que `vertices` contiene cuatro puntos 2D:
 
 ```python
-texture.get_texture_id(time_seconds)
+[[x0, y0], [x1, y1], [x2, y2], [x3, y3]]
 ```
 
-Asi se obtiene el frame correcto segun el tiempo actual.
+Esos cuatro puntos se dibujan como un `GL_QUADS`. Como el usuario puede moverlos, el cuadrilatero puede deformarse para calzar con la perspectiva del cubo fisico.
 
-## Efecto De Cubo Infinito
+## 5. Dibujar Una Cara Normal
 
-El efecto infinito se implementa en `draw_infinite_mirror_face(...)`, dentro de `renderer.py`.
+El dibujo de una cara se realiza en `renderer.py`:
 
-La idea es dibujar muchos anillos dentro de cada cara. Cada anillo representa una repeticion mas profunda del tunel visual.
+```python
+def draw_face(face, is_active=True, time_seconds=0.0):
+    verts = face.vertices
+    if face.texture_id is not None:
+        _draw_textured_face(verts, _resolve_texture_id(face.texture_id, time_seconds))
+    else:
+        _draw_colored_face(verts, face.color)
 
-El proceso general es:
+    _draw_edges(verts, is_active)
+    _draw_vertices(verts, face.selected_vertex, is_active)
+```
 
-1. Se calcula un punto de fuga animado.
-2. Se generan varios anillos desde el borde de la cara hacia el centro.
-3. Cada anillo se dibuja con `GL_LINE_LOOP`.
-4. Se conectan los anillos con lineas hacia el centro para reforzar la sensacion de profundidad.
-5. Se agrega un brillo animado en uno de los anillos.
+Si la cara tiene textura, se dibuja texturizada. Si no tiene textura, se dibuja con color plano.
 
-La profundidad se controla con `mirror_depth`.
+El color plano usa:
 
-El usuario puede modificarla con:
+```python
+glDisable(GL_TEXTURE_2D)
+glColor3f(*color)
+glBegin(GL_QUADS)
+for v in verts:
+    glVertex2f(*v)
+glEnd()
+```
 
-- `+`: aumenta profundidad.
-- `-`: disminuye profundidad.
+La cara texturizada usa coordenadas UV basicas:
 
-## Figuras Del Efecto Infinito
+```python
+uv = [(0, 0), (1, 0), (1, 1), (0, 1)]
+for (u, v_coord), vertex in zip(uv, verts):
+    glTexCoord2f(u, v_coord)
+    glVertex2f(*vertex)
+```
+
+Esto asigna la imagen completa a la cara, deformandola segun la posicion de los vertices.
+
+## 6. Calibracion Con Mouse
+
+La calibracion se realiza moviendo los vertices de la cara activa.
+
+Primero se detecta si el click esta cerca de un vertice:
+
+```python
+def find_vertex_near(self, mouse_pos, radius=12):
+    mx, my = mouse_pos
+    for i, (vx, vy) in enumerate(self.vertices):
+        if abs(mx - vx) < radius and abs(my - vy) < radius:
+            return i
+    return None
+```
+
+Cuando el usuario presiona el mouse:
+
+```python
+if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+    self._start_drag(event.pos)
+```
+
+Si se encontro un vertice cercano, se guarda como seleccionado:
+
+```python
+face.selected_vertex = idx
+self.dragging = True
+```
+
+Mientras el mouse se mueve, se actualiza la posicion del vertice:
+
+```python
+if event.type == pygame.MOUSEMOTION and self.dragging:
+    face.move_vertex(face.selected_vertex, event.pos)
+```
+
+Esta es la parte central del projection mapping manual: el usuario ajusta los vertices hasta que las caras virtuales coincidan con el cubo real.
+
+## 7. Seleccion De Cara Activa
+
+La cara activa se cambia con `TAB`:
+
+```python
+if key == pygame.K_TAB:
+    self.active_face = (self.active_face + 1) % len(self.faces)
+```
+
+Luego en `main.py`, al dibujar, se calcula:
+
+```python
+is_active = index == handler.active_face
+```
+
+Y se pasa al renderer:
+
+```python
+draw_face(face, is_active=is_active, time_seconds=time_seconds)
+```
+
+El renderer usa ese estado para cambiar borde y vertices:
+
+```python
+glLineWidth(4 if is_active else 1.5)
+glColor3f(*(ACTIVE_EDGE_COLOR if is_active else INACTIVE_EDGE_COLOR))
+```
+
+Esto permite saber visualmente que cara se esta editando.
+
+## 8. Paleta De Colores
+
+La paleta esta definida en `input_handler.py`:
+
+```python
+COLOR_PALETTE = {
+    pygame.K_1: (0.95, 0.10, 0.18),
+    pygame.K_2: (1.00, 0.35, 0.08),
+    pygame.K_3: (1.00, 0.78, 0.12),
+    # ...
+}
+```
+
+Cuando el usuario presiona una tecla de color:
+
+```python
+if key in COLOR_PALETTE:
+    self.faces[self.active_face].color = COLOR_PALETTE[key]
+    self.faces[self.active_face].texture_id = None
+```
+
+Se elimina la textura para que el color plano sea visible inmediatamente.
+
+## 9. Carga De Texturas
+
+Las texturas se buscan automaticamente dentro de `assets/`:
+
+```python
+TEXTURE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif"}
+```
+
+El escaneo se realiza con `Path.iterdir()`:
+
+```python
+paths = [
+    path
+    for path in folder.iterdir()
+    if path.is_file() and path.suffix.lower() in TEXTURE_EXTENSIONS
+]
+```
+
+Con `T` se avanza en la lista, y con `Shift + T` se retrocede:
+
+```python
+step = -1 if pygame.key.get_mods() & pygame.KMOD_SHIFT else 1
+self._cycle_texture(step)
+```
+
+Para no cargar la misma textura muchas veces, se usa cache:
+
+```python
+if path not in self.texture_cache:
+    self.texture_cache[path] = load_texture_asset(str(path))
+```
+
+## 10. Subir Una Imagen A OpenGL
+
+La carga de una imagen estatica esta en `texture_loader.py`:
+
+```python
+img = Image.open(filepath).convert("RGBA")
+img_data = np.array(img, dtype=np.uint8)
+```
+
+Luego se genera y configura la textura:
+
+```python
+texture_id = glGenTextures(1)
+glBindTexture(GL_TEXTURE_2D, texture_id)
+glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
+
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+```
+
+Finalmente se suben los pixeles:
+
+```python
+glTexImage2D(
+    GL_TEXTURE_2D, 0, GL_RGBA,
+    img.width, img.height, 0,
+    GL_RGBA, GL_UNSIGNED_BYTE, img_data
+)
+```
+
+Se usa `GL_CLAMP_TO_EDGE` para evitar bordes repetidos o artefactos en las esquinas.
+
+## 11. GIFs Animados
+
+Los GIFs se cargan como varias texturas, una por frame.
+
+La clase `AnimatedTexture` guarda:
+
+- lista de `texture_ids`,
+- duracion de cada frame,
+- duracion total.
+
+```python
+class AnimatedTexture:
+    def __init__(self, texture_ids, frame_durations):
+        self.texture_ids = texture_ids
+        self.frame_durations = frame_durations
+        self.total_duration = sum(frame_durations)
+```
+
+Los frames se extraen con Pillow:
+
+```python
+for frame in ImageSequence.Iterator(img):
+    duration = frame.info.get("duration", img.info.get("duration", 100))
+    texture_ids.append(_create_texture_from_image(frame.convert("RGBA")))
+    frame_durations.append(duration)
+```
+
+Durante el render se elige el frame segun el tiempo:
+
+```python
+elapsed_ms = (time_seconds * 1000.0) % self.total_duration
+```
+
+Luego se acumulan duraciones hasta encontrar el frame correspondiente.
+
+En `renderer.py`, el codigo no necesita saber si la textura es estatica o animada:
+
+```python
+def _resolve_texture_id(texture, time_seconds):
+    if hasattr(texture, "get_texture_id"):
+        return texture.get_texture_id(time_seconds)
+    return texture
+```
+
+Esto permite que `draw_face(...)` funcione igual para PNG, JPG o GIF.
+
+## 12. Efecto De Cubo Infinito
+
+El efecto se dibuja con `draw_infinite_mirror_face(...)`.
+
+La idea es generar muchos anillos dentro de cada cara, desde el borde hacia el centro:
+
+```python
+rings = _build_full_face_rings(verts, shape, center_uv, depth)
+```
+
+Cada anillo se dibuja como una linea cerrada:
+
+```python
+glBegin(GL_LINE_LOOP)
+for v in ring:
+    glVertex2f(*v)
+glEnd()
+```
+
+La profundidad se controla con `depth`. Mas profundidad significa mas anillos.
+
+El color de cada anillo varia con una onda temporal:
+
+```python
+wave = 0.5 + 0.5 * math.sin(time_seconds * 3.2 - i * 0.7)
+intensity = (1.0 - t) * 0.75 + wave * 0.25
+```
+
+Esto produce un brillo animado, como si el tunel tuviera movimiento.
+
+## 13. Punto De Fuga Animado
+
+El punto de fuga se calcula en coordenadas UV de la cara:
+
+```python
+def _animated_vanishing_uv(time_seconds, pulse):
+    return (
+        0.5 + math.sin(time_seconds * 0.9) * 0.055 * pulse,
+        0.5 + math.cos(time_seconds * 1.1) * 0.055 * pulse,
+    )
+```
+
+Luego ese punto UV se transforma a posicion real dentro del cuadrilatero:
+
+```python
+vanishing = _quad_point(verts, center_uv[0], center_uv[1])
+```
+
+Esto hace que el centro del tunel se mueva suavemente dentro de cada cara.
+
+## 14. Interpolacion Dentro De Un Cuadrilatero
+
+La funcion `_quad_point(...)` convierte coordenadas UV a coordenadas de pantalla:
+
+```python
+def _quad_point(verts, u, v):
+    top_x = verts[0][0] * (1.0 - u) + verts[1][0] * u
+    top_y = verts[0][1] * (1.0 - u) + verts[1][1] * u
+    bottom_x = verts[3][0] * (1.0 - u) + verts[2][0] * u
+    bottom_y = verts[3][1] * (1.0 - u) + verts[2][1] * u
+    return (
+        top_x * (1.0 - v) + bottom_x * v,
+        top_y * (1.0 - v) + bottom_y * v,
+    )
+```
+
+Esta es una interpolacion bilineal simple. Permite construir puntos internos aunque la cara este deformada.
+
+Es clave para el efecto infinito, porque los anillos se calculan en UV y despues se proyectan al cuadrilatero real.
+
+## 15. Figuras Del Infinito
 
 Las figuras disponibles estan en `MIRROR_SHAPES`:
 
 ```python
-("quad", "triangle", "diamond", "hexagon", "circle", "star")
+MIRROR_SHAPES = ("quad", "triangle", "diamond", "hexagon", "circle", "star")
 ```
 
-El usuario cambia de figura con `F`.
-
-La funcion `_build_full_face_rings(...)` genera los anillos para cada figura. Para que el efecto ocupe toda la cara, los anillos se calculan desde el borde del cuadrilatero y luego se van deformando hacia la figura seleccionada.
-
-Por ejemplo:
-
-- `quad`: mantiene forma rectangular.
-- `circle`: se acerca a circulos concentricos.
-- `star`: genera una forma de estrella hacia el centro.
-- `triangle`, `diamond`, `hexagon`: producen tuneles con esas formas.
-
-## Acomodar Las Caras Como Cubo
-
-En `main.py`, la funcion `arrange_faces_as_cube(...)` reubica automaticamente las tres caras para formar una plantilla de cubo.
-
-Se activa con la tecla `G`.
-
-Esta funcion modifica los vertices de las tres caras:
-
-- cara frontal,
-- cara lateral,
-- cara superior.
-
-No cambia los colores ni las texturas. Solo actualiza posiciones.
-
-Esto sirve como punto de partida rapido antes de realizar la calibracion fina sobre el cubo real.
-
-## Overlay De Controles
-
-El panel de controles se dibuja dentro de OpenGL usando `draw_controls_overlay(...)`.
-
-El texto se genera con Pygame:
-
-1. Se renderiza texto en una superficie de Pygame.
-2. Esa superficie se convierte en bytes RGBA.
-3. Se sube como textura OpenGL.
-4. Se dibuja como un cuadrilatero texturizado.
-
-Para mejorar rendimiento, las texturas de texto se guardan en cache en `_TEXT_CACHE`.
-
-El overlay muestra:
-
-- cara activa,
-- estado del infinito,
-- figura actual,
-- profundidad,
-- controles principales.
-
-Se puede ocultar o mostrar con `H`.
-
-## Pantalla Completa
-
-La tecla `ESC` llama a:
+La tecla `F` cambia el indice:
 
 ```python
-pygame.display.toggle_fullscreen()
+mirror_shape_index = (mirror_shape_index + 1) % len(MIRROR_SHAPES)
 ```
 
-Esto permite alternar entre ventana y pantalla completa, util para trabajar con un proyector.
+La funcion `_build_full_face_rings(...)` genera los anillos. Para cada angulo se calcula hasta donde llega el borde de la cara:
 
-## Loop Principal
+```python
+boundary_radius = _square_boundary_radius(center_uv, angle)
+```
 
-El loop principal esta en `main.py`.
+Luego se aplica un factor segun la figura:
 
-En cada frame:
+```python
+shape_factor = _shape_radius_factor(shape, angle, center_uv, boundary_radius)
+radius = boundary_radius * scale * (1.0 - shape_strength * (1.0 - shape_factor))
+```
 
-1. Se leen eventos de Pygame.
-2. Se actualizan estados como figura, profundidad o textura.
-3. Se limpia la pantalla con `glClear`.
-4. Se dibujan las caras.
-5. Se dibuja el overlay de controles.
-6. Se actualiza la ventana con `pygame.display.flip()`.
-7. Se limita la ejecucion a 60 FPS con `clock.tick(60)`.
+Esto permite que:
 
-## Resumen
+- el anillo exterior ocupe toda la cara,
+- los anillos internos se deformen hacia circulo, estrella, triangulo, etc.
 
-El proyecto combina:
+## 16. Lineas De Profundidad
 
-- Pygame para ventana, input y texto.
-- OpenGL para dibujar caras, texturas y efectos.
-- Pillow para cargar imagenes y GIFs.
-- Una estructura de caras editables para permitir projection mapping manual.
+Ademas de los anillos, el efecto dibuja lineas desde el borde hacia el centro:
 
-La funcionalidad central es poder deformar tres cuadrilateros en pantalla para que calcen con tres caras reales de un cubo, y luego proyectar colores, texturas, GIFs o un efecto visual de cubo infinito sobre ellas.
+```python
+for corner in range(spoke_count):
+    glBegin(GL_LINES)
+    glVertex2f(*rings[0][corner])
+    glVertex2f(*rings[-1][corner])
+    glEnd()
+```
+
+Estas lineas refuerzan la sensacion de tunel o espejo infinito.
+
+## 17. Brillo Animado
+
+Se elige un anillo que avanza con el tiempo:
+
+```python
+spark_index = int((time_seconds * 8) % max(depth, 1))
+```
+
+Luego se dibuja con mayor brillo:
+
+```python
+_draw_glow_quad(rings[spark_index], base)
+```
+
+El resultado es un pulso luminoso que recorre el tunel.
+
+## 18. Acomodar Las Caras Como Cubo
+
+La tecla `G` llama a `arrange_faces_as_cube(...)` en `main.py`.
+
+Esta funcion asigna coordenadas nuevas a los vertices para crear una plantilla inicial de cubo:
+
+```python
+faces[0].vertices = [
+    [left, top],
+    [right, top],
+    [right, bottom],
+    [left, bottom],
+]
+```
+
+La cara lateral comparte arista con la frontal:
+
+```python
+faces[1].vertices = [
+    [right, top],
+    [right + depth_x, top - depth_y],
+    [right + depth_x, bottom - depth_y],
+    [right, bottom],
+]
+```
+
+La cara superior comparte la arista superior:
+
+```python
+faces[2].vertices = [
+    [left, top],
+    [left + depth_x, top - depth_y],
+    [right + depth_x, top - depth_y],
+    [right, top],
+]
+```
+
+Esto no reemplaza la calibracion fina, pero deja las caras rapidamente en una configuracion tipo cubo.
+
+## 19. Overlay De Controles En OpenGL
+
+El panel de controles se dibuja dentro de OpenGL con `draw_controls_overlay(...)`.
+
+Primero se dibuja un rectangulo semitransparente:
+
+```python
+glColor4f(0.02, 0.025, 0.035, 0.46)
+glBegin(GL_QUADS)
+glVertex2f(x, y)
+glVertex2f(x + width, y)
+glVertex2f(x + width, y + height)
+glVertex2f(x, y + height)
+glEnd()
+```
+
+El texto se genera con Pygame y se convierte en textura OpenGL:
+
+```python
+font = pygame.font.Font(None, size)
+surface = font.render(text, True, color)
+data = pygame.image.tostring(surface, "RGBA", False)
+```
+
+Luego se sube con `glTexImage2D(...)` y se dibuja como un quad texturizado:
+
+```python
+glEnable(GL_TEXTURE_2D)
+glBindTexture(GL_TEXTURE_2D, texture_id)
+glBegin(GL_QUADS)
+glTexCoord2f(0, 0); glVertex2f(x, y)
+glTexCoord2f(1, 0); glVertex2f(x + width, y)
+glTexCoord2f(1, 1); glVertex2f(x + width, y + height)
+glTexCoord2f(0, 1); glVertex2f(x, y + height)
+glEnd()
+```
+
+Para no recrear texturas de texto en cada frame, se usa cache:
+
+```python
+_TEXT_CACHE[key] = (texture_id, width, height)
+```
+
+## 20. Pantalla Completa
+
+La tecla `ESC` alterna pantalla completa:
+
+```python
+if event.key == K_ESCAPE:
+    pygame.display.toggle_fullscreen()
+```
+
+Esto permite trabajar primero en ventana y despues pasar a proyector/pantalla completa.
+
+## 21. Control Del Estado Global
+
+Los estados principales viven en `main.py`:
+
+```python
+mirror_enabled = False
+mirror_depth = 18
+mirror_pulse = 1.0
+mirror_shape_index = 0
+show_overlay = True
+```
+
+El teclado modifica esos estados:
+
+```python
+if event.key == K_m:
+    mirror_enabled = not mirror_enabled
+
+if event.key in (K_PLUS, K_EQUALS, K_KP_PLUS):
+    mirror_depth = min(mirror_depth + 2, 40)
+```
+
+Luego el estado decide que se dibuja:
+
+```python
+if mirror_enabled:
+    draw_infinite_mirror_face(...)
+else:
+    draw_face(...)
+```
+
+## 22. Resumen Tecnico
+
+El proyecto funciona como un sistema de projection mapping 2D:
+
+1. Se crean tres caras como cuadrilateros editables.
+2. Se usa una proyeccion ortografica para trabajar con coordenadas de pantalla.
+3. El usuario mueve vertices para calibrar las caras sobre el cubo real.
+4. Cada cara puede mostrar color, textura estatica o GIF animado.
+5. El efecto infinito se genera con anillos OpenGL calculados en coordenadas UV y transformados al cuadrilatero deformado.
+6. La interfaz se dibuja tambien dentro de OpenGL usando quads y texto convertido a textura.
+
+La parte mas importante para explicar el proyecto es que no se esta renderizando un cubo 3D real. Se estan renderizando tres superficies 2D deformables que, al ser proyectadas sobre un cubo fisico, producen la ilusion de estar mapeadas sobre sus caras visibles.
